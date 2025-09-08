@@ -6,12 +6,8 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Daily Scanner — Full-Width Charts (Stocks & FX)", layout="wide")
 
-# ===================== TradingView embed (FULL WIDTH) =====================
+# ============== TradingView embed (plein écran) ==============
 def tradingview_widget_full(symbol: str, interval: str = "D", theme: str = "light", height: int = 950):
-    """
-    Embeds a TradingView chart that stretches to full browser width.
-    Uses the lightweight widgetembed iframe with explicit width=100%.
-    """
     safe_id = symbol.replace(":", "_").replace("/", "_")
     tv = f"""
     <iframe
@@ -26,9 +22,10 @@ def tradingview_widget_full(symbol: str, interval: str = "D", theme: str = "ligh
     """
     st.markdown(tv, unsafe_allow_html=True)
 
-# ===================== Sidebar Settings =====================
+# ===================== Sidebar =====================
 st.sidebar.title("Scanner Settings")
 
+# Logique de signal
 st.sidebar.subheader("Signal Logic")
 lookback_breakout = st.sidebar.slider("Breakout lookback (days)", 20, 100, 55, 5)
 ema_short = st.sidebar.slider("EMA short", 5, 50, 20, 1)
@@ -39,7 +36,17 @@ rsi_min   = st.sidebar.slider("RSI min", 45, 60, 52, 1)
 rsi_max   = st.sidebar.slider("RSI max", 65, 85, 70, 1)
 min_atr_pc = st.sidebar.slider("Min ATR%", 0.2, 5.0, 0.6, 0.1)
 max_atr_pc = st.sidebar.slider("Max ATR%", 1.0, 15.0, 6.0, 0.5)
+enable_shorts = st.sidebar.checkbox("Include SHORT setups", value=True)
 
+# Entrées / stops / objectifs
+st.sidebar.subheader("Entries & Targets")
+atr_mult = st.sidebar.slider("Stop ATR multiple", 0.5, 5.0, 2.0, 0.1)
+buffer_pc_stocks = st.sidebar.slider("Entry buffer (stocks) %", 0.0, 1.0, 0.20, 0.05)
+buffer_pc_fx     = st.sidebar.slider("Entry buffer (FX) %", 0.0, 0.50, 0.05, 0.01)
+tp1_R = st.sidebar.slider("TP1 (R multiple)", 0.5, 3.0, 1.5, 0.1)
+tp2_R = st.sidebar.slider("TP2 (R multiple)", 1.0, 5.0, 2.0, 0.1)
+
+# Sortie / chart
 st.sidebar.subheader("Output")
 top_n = st.sidebar.slider("Top picks per board", 3, 15, 8, 1)
 chart_interval = st.sidebar.selectbox("Chart interval", ["D","240","60","30","W"], index=0)
@@ -66,7 +73,7 @@ DEFAULT_FX = ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","NZDUSD","EU
 stocks_universe = [s.strip().upper() for s in (stocks_custom.split(",") if stocks_custom else DEFAULT_STOCKS) if s.strip()]
 fx_universe = [s.strip().upper() for s in (fx_custom.split(",") if fx_custom else DEFAULT_FX) if s.strip()]
 
-# ===================== Helpers =====================
+# ===================== Helpers (indicateurs) =====================
 def rsi(series: pd.Series, length: int = 14) -> pd.Series:
     delta = series.diff()
     up = np.where(delta > 0, delta, 0.0)
@@ -84,8 +91,7 @@ def atr(high, low, close, length=14):
     return tr.rolling(length).mean()
 
 def tv_stock_symbol(prefix: str, yahoo_sym: str) -> str:
-    # Convert Yahoo tickers like 'BRK-B' -> TradingView 'BRK.B'
-    tv_core = yahoo_sym.replace("-", ".")
+    tv_core = yahoo_sym.replace("-", ".")  # BRK-B -> BRK.B
     return f"{prefix}:{tv_core}"
 
 def tv_fx_symbol(prefix: str, pair: str) -> str:
@@ -108,38 +114,93 @@ def get_df(data, sym, is_fx=False):
     if key not in data: return None
     return data[key].rename(columns=str.title).dropna()
 
-def score_rows(symbols, data, is_fx=False):
+# ===================== Scoring + Levels =====================
+def compute_signal_and_levels(df: pd.DataFrame, kind: str, is_fx: bool):
+    """
+    kind: 'stocks' or 'fx'
+    Returns dict with Bias (Long/Short/None), Score, Entry, Stop, TP1, TP2.
+    """
+    d = df.copy()
+    d["EMA_S"] = d["Close"].ewm(span=ema_short, adjust=False).mean()
+    d["EMA_M"] = d["Close"].ewm(span=ema_mid, adjust=False).mean()
+    d["EMA_L"] = d["Close"].ewm(span=ema_long, adjust=False).mean()
+    d["RSI"]   = rsi(d["Close"], rsi_len)
+    d["ATR"]   = atr(d["High"], d["Low"], d["Close"], 14)
+    d["ATR%"]  = (d["ATR"] / d["Close"]) * 100.0
+    d["HH_N"]  = d["High"].rolling(lookback_breakout).max()
+    d["LL_N"]  = d["Low"].rolling(lookback_breakout).min()
+
+    last = d.iloc[-1]
+    ema_up   = bool(last["EMA_S"] > last["EMA_M"] > last["EMA_L"])
+    ema_down = bool(last["EMA_S"] < last["EMA_M"] < last["EMA_L"])
+    rsi_ok   = (last["RSI"] >= rsi_min) and (last["RSI"] <= rsi_max)
+    atr_ok   = (last["ATR%"] >= min_atr_pc) and (last["ATR%"] <= max_atr_pc)
+    bo_up    = bool(last["Close"] >= last["HH_N"])
+    bo_dn    = bool(last["Close"] <= last["LL_N"])
+
+    score_long  = (3 if ema_up else 0) + (2 if bo_up else 0) + (2 if rsi_ok else 0) + (1 if atr_ok else 0)
+    score_short = (3 if ema_down else 0) + (2 if bo_dn else 0) + (2 if rsi_ok else 0) + (1 if atr_ok else 0)
+
+    # Sélection du biais & conditions d'entrée
+    buffer_pc = (buffer_pc_fx if is_fx else buffer_pc_stocks) / 100.0
+    entry = stop = tp1 = tp2 = np.nan
+    bias = "None"
+    score = 0
+
+    if ema_up and bo_up and rsi_ok and atr_ok:
+        bias = "Long"
+        score = int(score_long)
+        trigger = float(last["High"])  # logique breakout : au-dessus du dernier plus haut
+        entry = trigger * (1.0 + buffer_pc)
+        stop  = float(last["Close"] - last["ATR"] * atr_mult)
+        risk  = max(1e-9, entry - stop)
+        tp1   = entry + risk * tp1_R
+        tp2   = entry + risk * tp2_R
+
+    elif enable_shorts and ema_down and bo_dn and rsi_ok and atr_ok:
+        bias = "Short"
+        score = int(score_short)
+        trigger = float(last["Low"])   # breakdown
+        entry = trigger * (1.0 - buffer_pc)
+        stop  = float(last["Close"] + last["ATR"] * atr_mult)
+        risk  = max(1e-9, stop - entry)
+        tp1   = entry - risk * tp1_R
+        tp2   = entry - risk * tp2_R
+
+    return {
+        "Bias": bias,
+        "Score": int(score),
+        "Entry": None if np.isnan(entry) else round(entry, 6 if is_fx else 4),
+        "Stop": None if np.isnan(stop) else round(stop, 6 if is_fx else 4),
+        "TP1": None if np.isnan(tp1) else round(tp1, 6 if is_fx else 4),
+        "TP2": None if np.isnan(tp2) else round(tp2, 6 if is_fx else 4),
+        "RSI": round(float(last["RSI"]), 1),
+        "ATR%": round(float(last["ATR%"]), 2),
+    }
+
+def score_rows_with_levels(symbols, data, universe_type: str):
     rows = []
+    is_fx = (universe_type == "fx")
     for s in symbols:
-        df = get_df(data, s, is_fx)
+        df = get_df(data, s, is_fx=is_fx)
         if df is None or len(df) < 220:
             continue
-        df["EMA_S"] = df["Close"].ewm(span=ema_short, adjust=False).mean()
-        df["EMA_M"] = df["Close"].ewm(span=ema_mid, adjust=False).mean()
-        df["EMA_L"] = df["Close"].ewm(span=ema_long, adjust=False).mean()
-        df["RSI"]   = rsi(df["Close"], rsi_len)
-        df["ATR"]   = atr(df["High"], df["Low"], df["Close"], 14)
-        df["ATR%"]  = (df["ATR"] / df["Close"]) * 100.0
-        df["HH_N"]  = df["High"].rolling(lookback_breakout).max()
-
-        last = df.iloc[-1]
-        trend_align = last["EMA_S"] > last["EMA_M"] > last["EMA_L"]
-        breakout    = last["Close"] >= last["HH_N"]
-        rsi_ok      = (last["RSI"] >= rsi_min) and (last["RSI"] <= rsi_max)
-        atr_ok      = (last["ATR%"] >= min_atr_pc) and (last["ATR%"] <= max_atr_pc)
-
-        score = (3 if trend_align else 0) + (2 if breakout else 0) + (2 if rsi_ok else 0) + (1 if atr_ok else 0)
-
-        rows.append({
-            "Symbol": s,
-            "Score": int(score),
-            "TrendAlign": bool(trend_align),
-            "Breakout": bool(breakout),
-            "RSI": round(float(last["RSI"]), 1),
-            "ATR%": round(float(last["ATR%"]), 2)
-        })
+        sig = compute_signal_and_levels(df, universe_type, is_fx=is_fx)
+        # Garder les lignes avec un biais Long/Short (sinon ignorer)
+        if sig["Bias"] != "None":
+            rows.append({
+                "Symbol": s,
+                "Bias": sig["Bias"],
+                "Score": sig["Score"],
+                "Entry": sig["Entry"],
+                "Stop": sig["Stop"],
+                "TP1": sig["TP1"],
+                "TP2": sig["TP2"],
+                "RSI": sig["RSI"],
+                "ATR%": sig["ATR%"],
+            })
     if not rows:
-        return pd.DataFrame(columns=["Symbol","Score","TrendAlign","Breakout","RSI","ATR%"])
+        return pd.DataFrame(columns=["Symbol","Bias","Score","Entry","Stop","TP1","TP2","RSI","ATR%"])
     return pd.DataFrame(rows).sort_values(["Score","ATR%"], ascending=[False, False])
 
 # ===================== Fetch & Score =====================
@@ -148,35 +209,36 @@ with st.spinner("Downloading STOCKS data..."):
 with st.spinner("Downloading FX data..."):
     fx_data = fetch_yf(fx_universe, is_fx=True)
 
-rank_stocks = score_rows(stocks_universe, stocks_data, is_fx=False).head(top_n)
-rank_fx     = score_rows(fx_universe, fx_data, is_fx=True).head(top_n)
+rank_stocks = score_rows_with_levels(stocks_universe, stocks_data, "stocks").head(top_n)
+rank_fx     = score_rows_with_levels(fx_universe, fx_data, "fx").head(top_n)
 
-# ===================== Two Boards (tables in columns) =====================
-st.title("📊 Daily Scanner — Stocks & Forex (Full-Width Charts)")
+# ===================== UI =====================
+st.title("📊 Daily Scanner — Stocks & Forex (Entries/Stops/Targets + Full-Width Charts)")
 
+# Deux tableaux (gauche = actions, droite = forex)
 col_left, col_right = st.columns(2, gap="large")
 
 with col_left:
-    st.subheader("Top Stocks")
+    st.subheader("Top Stocks (with entries & targets)")
     if rank_stocks.empty:
-        st.info("No stocks passed the filters today.")
+        st.info("No stock setups today (conditions too strict?).")
         selected_stock = None
     else:
         st.dataframe(rank_stocks, use_container_width=True)
         selected_stock = st.selectbox("Choose stock:", rank_stocks["Symbol"].tolist(), index=0, key="stock_sel")
 
 with col_right:
-    st.subheader("Top Forex")
+    st.subheader("Top Forex (with entries & targets)")
     if rank_fx.empty:
-        st.info("No FX pairs passed the filters today.")
+        st.info("No FX setups today (conditions too strict?).")
         selected_fx = None
     else:
         st.dataframe(rank_fx, use_container_width=True)
         selected_fx = st.selectbox("Choose FX:", rank_fx["Symbol"].tolist(), index=0, key="fx_sel")
 
-# ===================== FULL-WIDTH CHARTS (no columns) =====================
 st.markdown("---")
 
+# Graphiques TradingView (plein écran, l’un sous l’autre)
 if selected_stock:
     st.subheader(f"Stock chart — {stocks_prefix}:{selected_stock.replace('-', '.')}")
     tradingview_widget_full(
@@ -196,5 +258,9 @@ if selected_fx:
     )
 
 st.markdown("---")
-st.caption("Score = 3 (EMA S>M>L) + 2 (breakout over lookback high) + 2 (RSI in band) + 1 (ATR% in range).")
+st.caption(
+    "Entrée = breakout (avec buffer). Stop = ATR × multiplicateur. TP1/TP2 = R multiples. "
+    "Modifie les paramètres dans la barre latérale pour ajuster les niveaux."
+)
+
 
