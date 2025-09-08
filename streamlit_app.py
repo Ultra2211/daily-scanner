@@ -4,38 +4,27 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Daily Scanner — Full Charts (Stocks & FX)", layout="wide")
+st.set_page_config(page_title="Daily Scanner — Full-Width Charts (Stocks & FX)", layout="wide")
 
-# ===================== TradingView embed (full-width) =====================
-def tradingview_widget(symbol: str, interval: str = "D", theme: str = "light", height: int = 950):
+# ===================== TradingView embed (FULL WIDTH) =====================
+def tradingview_widget_full(symbol: str, interval: str = "D", theme: str = "light", height: int = 950):
     """
-    Embed a full-width TradingView chart. Height is adjustable (default 950 px).
+    Embeds a TradingView chart that stretches to full browser width.
+    Uses the lightweight widgetembed iframe with explicit width=100%.
     """
-    tv = f'''
-    <div class="tradingview-widget-container" style="height:{height}px;">
-      <div id="tradingview_chart_{symbol.replace(':','_')}"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-      new TradingView.widget({{
-        "autosize": true,
-        "symbol": "{symbol}",
-        "interval": "{interval}",
-        "timezone": "Etc/UTC",
-        "theme": "{theme}",
-        "style": "1",
-        "locale": "en",
-        "toolbar_bg": "#f1f3f6",
-        "enable_publishing": false,
-        "withdateranges": true,
-        "allow_symbol_change": true,
-        "details": true,
-        "studies": [],
-        "container_id": "tradingview_chart_{symbol.replace(':','_')}"
-      }});
-      </script>
-    </div>
-    '''
-    st.components.v1.html(tv, height=height, scrolling=False)
+    safe_id = symbol.replace(":", "_").replace("/", "_")
+    tv = f"""
+    <iframe
+        id="tradingview_{safe_id}"
+        src="https://s.tradingview.com/widgetembed/?frameElementId=tradingview_{safe_id}&symbol={symbol}&interval={interval}&theme={theme}&style=1&locale=en&allow_symbol_change=1&withdateranges=1&details=1"
+        width="100%"
+        height="{height}"
+        frameborder="0"
+        allowtransparency="true"
+        scrolling="no">
+    </iframe>
+    """
+    st.markdown(tv, unsafe_allow_html=True)
 
 # ===================== Sidebar Settings =====================
 st.sidebar.title("Scanner Settings")
@@ -55,7 +44,7 @@ st.sidebar.subheader("Output")
 top_n = st.sidebar.slider("Top picks per board", 3, 15, 8, 1)
 chart_interval = st.sidebar.selectbox("Chart interval", ["D","240","60","30","W"], index=0)
 theme = st.sidebar.selectbox("Chart theme", ["light","dark"], index=0)
-chart_height_px = st.sidebar.slider("Chart height (px)", 700, 700, 950)
+chart_height_px = st.sidebar.slider("Chart height (px)", 700, 1400, 950, 10)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("TradingView Prefixes")
@@ -95,9 +84,7 @@ def atr(high, low, close, length=14):
     return tr.rolling(length).mean()
 
 def tv_stock_symbol(prefix: str, yahoo_sym: str) -> str:
-    """
-    Convert Yahoo tickers like 'BRK-B' to TradingView format 'BRK.B' and add prefix, e.g. 'NYSE:BRK.B'.
-    """
+    # Convert Yahoo tickers like 'BRK-B' -> TradingView 'BRK.B'
     tv_core = yahoo_sym.replace("-", ".")
     return f"{prefix}:{tv_core}"
 
@@ -164,8 +151,8 @@ with st.spinner("Downloading FX data..."):
 rank_stocks = score_rows(stocks_universe, stocks_data, is_fx=False).head(top_n)
 rank_fx     = score_rows(fx_universe, fx_data, is_fx=True).head(top_n)
 
-# ===================== Two Boards (tables) =====================
-st.title("📊 Daily Scanner — Stocks & Forex (Full-width Charts)")
+# ===================== Two Boards (tables in columns) =====================
+st.title("📊 Daily Scanner — Stocks & Forex (Full-Width Charts)")
 
 col_left, col_right = st.columns(2, gap="large")
 
@@ -187,26 +174,27 @@ with col_right:
         st.dataframe(rank_fx, use_container_width=True)
         selected_fx = st.selectbox("Choose FX:", rank_fx["Symbol"].tolist(), index=0, key="fx_sel")
 
+# ===================== FULL-WIDTH CHARTS (no columns) =====================
 st.markdown("---")
 
-# ===================== Always show BIG full-width charts =====================
 if selected_stock:
     st.subheader(f"Stock chart — {stocks_prefix}:{selected_stock.replace('-', '.')}")
-    tradingview_widget(
+    tradingview_widget_full(
         symbol=tv_stock_symbol(stocks_prefix, selected_stock),
         interval=chart_interval,
         theme=theme,
-        height=chart_height_px,   # default 950 px; adjustable in sidebar
+        height=chart_height_px
     )
 
 if selected_fx:
     st.subheader(f"FX chart — {fx_prefix}:{selected_fx}")
-    tradingview_widget(
+    tradingview_widget_full(
         symbol=tv_fx_symbol(fx_prefix, selected_fx),
         interval=chart_interval,
         theme=theme,
-        height=chart_height_px,   # default 950 px; adjustable in sidebar
+        height=chart_height_px
     )
 
 st.markdown("---")
 st.caption("Score = 3 (EMA S>M>L) + 2 (breakout over lookback high) + 2 (RSI in band) + 1 (ATR% in range).")
+
