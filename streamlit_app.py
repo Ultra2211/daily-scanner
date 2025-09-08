@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit as st 
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -11,6 +11,7 @@ def tradingview_widget_full(symbol: str, interval: str = "D", theme: str = "ligh
     """
     Embeds a TradingView chart that stretches to full browser width.
     Uses the lightweight widgetembed iframe with explicit width=100%.
+    NOTE: Embedded widgets cannot access your TradingView account (no saved layouts/indicators).
     """
     safe_id = symbol.replace(":", "_").replace("/", "_")
     tv = f"""
@@ -25,6 +26,14 @@ def tradingview_widget_full(symbol: str, interval: str = "D", theme: str = "ligh
     </iframe>
     """
     st.markdown(tv, unsafe_allow_html=True)
+
+def tradingview_direct_link(symbol: str, interval: str = "D") -> str:
+    """
+    Builds a direct TradingView URL. Opening this in a new tab uses your
+    TradingView login session, so your saved indicators/layout appear.
+    """
+    # Example: https://www.tradingview.com/chart/?symbol=NASDAQ:AAPL&interval=D
+    return f"https://www.tradingview.com/chart/?symbol={symbol}&interval={interval}"
 
 # ===================== Sidebar Settings =====================
 st.sidebar.title("Scanner Settings")
@@ -178,22 +187,34 @@ with col_right:
 st.markdown("---")
 
 if selected_stock:
-    st.subheader(f"Stock chart — {stocks_prefix}:{selected_stock.replace('-', '.')}")
+    tv_sym_stock = tv_stock_symbol(stocks_prefix, selected_stock)
+    st.subheader(f"Stock chart — {tv_sym_stock}")
     tradingview_widget_full(
-        symbol=tv_stock_symbol(stocks_prefix, selected_stock),
+        symbol=tv_sym_stock,
         interval=chart_interval,
         theme=theme,
         height=chart_height_px
     )
+    # --- Open in TradingView (loads your login + saved indicators) ---
+    url_stock = tradingview_direct_link(tv_sym_stock, chart_interval)
+    st.link_button("Open in TradingView (with my indicators)", url_stock)
 
 if selected_fx:
-    st.subheader(f"FX chart — {fx_prefix}:{selected_fx}")
+    tv_sym_fx = tv_fx_symbol(fx_prefix, selected_fx)
+    st.subheader(f"FX chart — {tv_sym_fx}")
     tradingview_widget_full(
-        symbol=tv_fx_symbol(fx_prefix, selected_fx),
+        symbol=tv_sym_fx,
         interval=chart_interval,
         theme=theme,
         height=chart_height_px
     )
+    # --- Open in TradingView (loads your login + saved indicators) ---
+    url_fx = tradingview_direct_link(tv_sym_fx, chart_interval)
+    st.link_button("Open in TradingView (with my indicators)", url_fx)
 
 st.markdown("---")
-st.caption("Score = 3 (EMA S>M>L) + 2 (breakout over lookback high) + 2 (RSI in band) + 1 (ATR% in range).")
+st.caption(
+    "Embedded charts cannot access your TradingView account. "
+    "Use the “Open in TradingView” button to load your saved indicators/layout while logged in."
+)
+
