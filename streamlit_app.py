@@ -55,7 +55,7 @@ st.sidebar.subheader("Output")
 top_n = st.sidebar.slider("Top picks per board", 3, 15, 8, 1)
 chart_interval = st.sidebar.selectbox("Chart interval", ["D","240","60","30","W"], index=0)
 theme = st.sidebar.selectbox("Chart theme", ["light","dark"], index=0)
-chart_height_px = st.sidebar.slider("Chart height (px)", 700, 700, 950, 10)
+chart_height_px = st.sidebar.slider("Chart height (px)", 700, 700, 950)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("TradingView Prefixes")
